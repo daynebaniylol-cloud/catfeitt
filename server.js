@@ -229,6 +229,8 @@ wss.on('connection', ws => {
     if (d.t === 'input') {
       const room = rooms[ws._roomId];
       if (!room) return;
+      // если drag только что отпустили — обнуляем velocity чтобы не дёргался
+      if (!d.drag) { d.vx = 0; d.vy = 0; }
       if (ws._role === 'host')  { room.hostInput = d;  room.hostDrag  = d.drag; }
       if (ws._role === 'guest') { room.guestInput = d; room.guestDrag = d.drag; }
     }

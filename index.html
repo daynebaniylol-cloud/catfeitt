@@ -343,9 +343,13 @@ function connectWs(roomId,role){
       startGame(role);
     }
     if(d.t==='state'&&running){
-      // сервер авторитетен — применяем всё
-      red.x=d.rx;red.y=d.ry;red.vx=d.rvx;red.vy=d.rvy;
-      blue.x=d.bx;blue.y=d.by;blue.vx=d.bvx;blue.vy=d.bvy;
+      // своего игрока НЕ трогаем (локальное предсказание)
+      // соперника и шайбу берём с сервера
+      if(mpRole==='host'){
+        blue.x=d.bx;blue.y=d.by;blue.vx=d.bvx;blue.vy=d.bvy;
+      }else{
+        red.x=d.rx;red.y=d.ry;red.vx=d.rvx;red.vy=d.rvy;
+      }
       puck.x=d.px;puck.y=d.py;puck.vx=d.pvx;puck.vy=d.pvy;
     }
     if(d.t==='hit')playHit();
@@ -537,7 +541,17 @@ function draw(){
 function loop(){
   if(!running)return;
   if(mpRole){
-    // Сервер-авторитетная физика: только шлём свой ввод, получаем state от сервера
+    // Локальное предсказание своего игрока (без лага)
+    const me=mpRole==='guest'?blue:red;
+    const side=mpRole==='guest'?'blue':'red';
+    clamp(me);
+    if(dragPointerId===null){
+      // физика инерции локально
+      me.x+=me.vx;me.y+=me.vy;me.vx*=0.87;me.vy*=0.87;
+      if(side==='red'){me.x=Math.max(RINK.x+me.r,Math.min(CENTER_X-me.r,me.x));}
+      else{me.x=Math.max(CENTER_X+me.r,Math.min(RINK.x+RINK.w-me.r,me.x));}
+      me.y=Math.max(RINK.y+me.r,Math.min(RINK.y+RINK.h-me.r,me.y));
+    }
     sendInput();
   }else{
     // Соло — ИИ

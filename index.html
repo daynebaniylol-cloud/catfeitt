@@ -196,7 +196,6 @@ canvas{display:block;}
 <button id="btn-fs" onclick="goFS()">⛶</button>
 
 <canvas id="c"></canvas>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 <script>
 // ── РАНГИ ──
 const RANK_NAMES=['','Silver I','Silver II','Silver III','Gold Nova I','Gold Nova II','Gold Nova III','Master Guardian','Distinguished MG','Supreme','Global Elite'];
@@ -214,7 +213,11 @@ function initAudio(){
   hitSounds.forEach(s=>{s.preload='auto';s.volume=0.65;});
   menuMusic=new Audio('zxc.mp3');
   menuMusic.loop=true;menuMusic.volume=0.42;
-  menuMusic.play().catch(()=>{});
+  // Chrome требует user gesture — уже есть, просто играем
+  menuMusic.play().catch(()=>{
+    // повтор через небольшую задержку если браузер заблокировал
+    setTimeout(()=>menuMusic.play().catch(()=>{}),500);
+  });
 }
 function stopMenuMusic(){if(menuMusic){menuMusic.pause();menuMusic.currentTime=0;}}
 let _lht=0;
@@ -240,7 +243,15 @@ function closeModal(id){document.getElementById(id).classList.remove('open');}
 document.querySelectorAll('.modal-overlay').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');});});
 function saveNick(){const v=document.getElementById('input-nick').value.trim();if(!v)return;playerNick=v;localStorage.setItem('nick',playerNick);updateNickUI();closeModal('modal-nick');}
 function updateProfileModal(){document.getElementById('prof-nick').textContent=playerNick;document.getElementById('prof-elo').textContent=playerElo;document.getElementById('prof-wins').textContent=statsWins;document.getElementById('prof-losses').textContent=statsLosses;document.getElementById('prof-goals').textContent=statsGoals;refreshRankUI();}
-function buildTops(){document.getElementById('tops-list').innerHTML=`<div class="top-row"><div class="top-rank">1</div><div class="top-nick">${playerNick}</div><div class="top-elo">${playerElo}</div></div><div style="color:#222;font-size:2.5vw;text-align:center;margin-top:3vw;">Онлайн таблица — скоро</div>`;}
+async function buildTops(){
+  const list=document.getElementById('tops-list');
+  list.innerHTML='<div style="color:#333;text-align:center;font-size:3vw;">Загрузка...</div>';
+  try{
+    const r=await fetch('/top');const top=await r.json();
+    if(!top.length){list.innerHTML='<div style="color:#222;text-align:center;font-size:3vw;">Пока пусто</div>';return;}
+    list.innerHTML=top.map((p,i)=>`<div class="top-row"><div class="top-rank">${i+1}</div><div class="top-nick">${p.nick}</div><div class="top-elo">${p.elo}</div></div>`).join('');
+  }catch(e){list.innerHTML='<div style="color:#333;text-align:center;font-size:3vw;">Ошибка</div>';}
+}
 let scoreLimit=5,aiDiff='medium';
 function saveSettings(){scoreLimit=parseInt(document.getElementById('sel-score').value);aiDiff=document.getElementById('sel-diff').value;closeModal('modal-settings');}
 const chars=['haha.png','xz.png','kompot.png'];
@@ -272,8 +283,10 @@ function goFS(){
 }
 function showFsBtn(show){document.getElementById('btn-fs').style.display=show?'block':'none';}
 
-// ── МУЛЬТИПЛЕЕР (PeerJS) ──
-let peer=null,conn=null,mpRole=null,mpOpponentNick='',mmAbort=false;
+// ── МУЛЬТИПЛЕЕР (WebSocket) ──
+let ws=null,mpRole=null,mpOpponentNick='',mmAbort=false;
+
+function wsSend(obj){if(ws&&ws.readyState===1)ws.send(JSON.stringify(obj));}
 
 function startGame(role){
   stopMenuMusic();mpRole=role;
@@ -290,9 +303,7 @@ function goMenu(){
   document.getElementById('screen-mm').style.display='none';
   showFsBtn(false);
   running=false;
-  // Закрываем peer соединение
-  if(conn){try{conn.close();}catch(e){}conn=null;}
-  if(peer){try{peer.destroy();}catch(e){}peer=null;}
+  if(ws){try{ws.close();}catch(e){}ws=null;}
   mpRole=null;mmAbort=false;
   updateNickUI();
   if(audioReady&&menuMusic)menuMusic.play().catch(()=>{});
@@ -312,37 +323,37 @@ function showWinScreen(iWin,delta){
   wi.classList.remove('spring');void wi.offsetWidth;wi.classList.add('spring');
 }
 
-// Lockstep: шлём только свои координаты, физика у обоих одинаковая
-function sendMyPos(){
-  if(!conn||!conn.open)return;
-  const me=mpRole==='host'?red:blue;
-  conn.send({t:'pos',x:me.x,y:me.y,vx:me.vx,vy:me.vy});
+// ── INPUT: шлём позицию своего игрока серверу каждый кадр ──
+function sendInput(){
+  if(!ws||ws.readyState!==1)return;
+  const me=mpRole==='guest'?blue:red;
+  wsSend({t:'input',x:me.x,y:me.y,vx:me.vx,vy:me.vy,drag:dragPointerId!==null});
 }
 
-// Синхронизация шайбы — только хост раз в 30 кадров для борьбы с расхождением
-let syncTick=0;
-function sendPuckSync(){
-  if(!conn||!conn.open||mpRole!=='host')return;
-  syncTick++;
-  if(syncTick%30===0)conn.send({t:'sync',px:puck.x,py:puck.y,pvx:puck.vx,pvy:puck.vy,sRed,sBlue});
-}
-
-function setupConn(c){
-  conn=c;
-  conn.on('data',d=>{
-    if(!d||!d.t)return;
-    if(d.t==='pos'){
-      // Получаем позицию соперника
-      const opp=mpRole==='host'?blue:red;
-      opp.x=d.x;opp.y=d.y;opp.vx=d.vx||0;opp.vy=d.vy||0;
+function connectWs(roomId,role){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}`);
+  ws.onopen=()=>{
+    wsSend({t:'join',roomId,role,nick:playerNick,elo:playerElo});
+  };
+  ws.onmessage=e=>{
+    const d=JSON.parse(e.data);
+    if(d.t==='start'){
+      document.getElementById('screen-found').style.display='none';
+      startGame(role);
     }
-    if(d.t==='sync'&&mpRole==='guest'){
-      // Мягкая коррекция шайбы от хоста (lerp чтобы не дёргало)
-      puck.x+=(d.px-puck.x)*0.3;puck.y+=(d.py-puck.y)*0.3;
-      puck.vx=d.pvx;puck.vy=d.pvy;
-      sRed=d.sRed;sBlue=d.sBlue;
+    if(d.t==='state'&&running){
+      // сервер авторитетен — применяем всё
+      red.x=d.rx;red.y=d.ry;red.vx=d.rvx;red.vy=d.rvy;
+      blue.x=d.bx;blue.y=d.by;blue.vx=d.bvx;blue.vy=d.bvy;
+      puck.x=d.px;puck.y=d.py;puck.vx=d.pvx;puck.vy=d.pvy;
     }
     if(d.t==='hit')playHit();
+    if(d.t==='goal'){
+      sRed=d.sRed;sBlue=d.sBlue;
+      const gx=(d.who==='blue')?RINK.x:RINK.x+RINK.w,gy=GY+GH/2;
+      spawnGoalStars(gx,gy,d.who==='red'?'#cc2222':'#2244bb');
+    }
     if(d.t==='end'){
       running=false;
       const iWin=mpRole==='host'?(d.winner==='red'):(d.winner==='blue');
@@ -353,9 +364,8 @@ function setupConn(c){
       showWinScreen(iWin,delta);
     }
     if(d.t==='bye'){running=false;alert('⚠️ Соперник вышел');goMenu();}
-  });
-  conn.on('close',()=>{if(running){running=false;alert('⚠️ Соперник отключился');goMenu();}});
-  conn.on('error',()=>{if(running){running=false;alert('⚠️ Ошибка соединения');goMenu();}});
+  };
+  ws.onclose=()=>{if(running){running=false;alert('⚠️ Соединение потеряно');goMenu();}};
 }
 
 async function joinOnline(){
@@ -366,7 +376,7 @@ async function joinOnline(){
 
   let data;
   try{
-    const resp=await fetch(`/match?nick=${encodeURIComponent(playerNick)}`);
+    const resp=await fetch(`/match?nick=${encodeURIComponent(playerNick)}&elo=${playerElo}`);
     if(mmAbort)return;
     if(!resp.ok)throw new Error('timeout');
     data=await resp.json();
@@ -378,35 +388,23 @@ async function joinOnline(){
   }
 
   mpOpponentNick=data.opponentNick;
+  mpRole=data.role;
   const roomId=data.roomId;
 
-  // Показываем экран "матч найден"
-  const my=playerNick,opp=data.opponentNick;
-  document.getElementById('found-red-name').textContent=data.role==='host'?my:opp;
-  document.getElementById('found-blue-name').textContent=data.role==='guest'?my:opp;
+  document.getElementById('found-red-name').textContent=data.role==='host'?playerNick:data.opponentNick;
+  document.getElementById('found-blue-name').textContent=data.role==='guest'?playerNick:data.opponentNick;
   document.getElementById('screen-mm').style.display='none';
   document.getElementById('screen-found').style.display='flex';
 
-  if(data.role==='host'){
-    // Хост создаёт peer с id = roomId, ждёт гостя
-    mpRole='host';
-    const pCfg={host:location.hostname,port:location.port||443,path:'/peer',secure:location.protocol==='https:'};peer=new Peer('hk-'+roomId,pCfg);
-    peer.on('connection',c=>{setupConn(c);setTimeout(()=>{document.getElementById('screen-found').style.display='none';startGame('host');},1500);});
-  }else{
-    // Гость коннектится к хосту
-    mpRole='guest';
-    const pCfg2={host:location.hostname,port:location.port||443,path:'/peer',secure:location.protocol==='https:'};peer=new Peer(undefined,pCfg2);
-    peer.on('open',()=>{
-      const c=peer.connect('hk-'+roomId);
-      setupConn(c);
-      c.on('open',()=>{setTimeout(()=>{document.getElementById('screen-found').style.display='none';startGame('guest');},1500);});
-    });
-  }
+  // создаём комнату на сервере (только хост)
+  if(data.role==='host') await fetch(`/room?id=${roomId}`);
+  // небольшая задержка чтобы хост успел создать комнату
+  setTimeout(()=>connectWs(roomId,data.role), data.role==='guest'?300:0);
 }
 
 function cancelMatchmaking(){
   mmAbort=true;
-  if(peer){try{peer.destroy();}catch(e){}peer=null;}
+  if(ws){try{ws.close();}catch(e){}ws=null;}
   document.getElementById('screen-mm').style.display='none';
   document.getElementById('screen-menu').style.display='flex';
 }
@@ -501,26 +499,18 @@ function movePuck(){
 }
 function spawnGoalStars(x,y,color){for(let i=0;i<14;i++){const a=Math.random()*Math.PI*2,sp=2+Math.random()*5;starAnims.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,r:5+Math.random()*8,color,life:60,maxLife:60});}}
 function goal(who){
+  // Только соло-режим — в онлайне голы считает сервер
+  if(mpRole)return;
   const gx=(who==='blue')?RINK.x:RINK.x+RINK.w,gy=GY+GH/2;
-  if(who==='red'){sRed++;spawnGoalStars(gx,gy,'#cc2222');if(!mpRole){statsGoals++;localStorage.setItem('goals',statsGoals);}}
+  if(who==='red'){sRed++;spawnGoalStars(gx,gy,'#cc2222');statsGoals++;localStorage.setItem('goals',statsGoals);}
   else{sBlue++;spawnGoalStars(gx,gy,'#2244bb');}
   if(sRed>=scoreLimit||sBlue>=scoreLimit){
     running=false;
     const rw=(sRed>=scoreLimit);
     const dRed=rw?Math.floor(15+Math.random()*10):-Math.floor(15+Math.random()*10);
-    const dBlue=-dRed;
-    if(!mpRole){
-      playerElo=Math.max(100,playerElo+dRed);localStorage.setItem('elo',playerElo);
-      if(rw){statsWins++;localStorage.setItem('wins',statsWins);}else{statsLosses++;localStorage.setItem('losses',statsLosses);}
-      showWinScreen(rw,dRed);
-    }else if(mpRole==='host'){
-      playerElo=Math.max(100,playerElo+dRed);localStorage.setItem('elo',playerElo);
-      if(rw){statsWins++;localStorage.setItem('wins',statsWins);}else{statsLosses++;localStorage.setItem('losses',statsLosses);}
-      if(conn&&conn.open)conn.send({t:'end',winner:rw?'red':'blue',deltaRed:dRed,deltaBlue:dBlue});
-      showWinScreen(rw,dRed);
-    }else{
-      // Гость — ждёт 'end' от хоста, просто останавливается
-    }
+    playerElo=Math.max(100,playerElo+dRed);localStorage.setItem('elo',playerElo);
+    if(rw){statsWins++;localStorage.setItem('wins',statsWins);}else{statsLosses++;localStorage.setItem('losses',statsLosses);}
+    showWinScreen(rw,dRed);
   }else resetPos();
 }
 
@@ -547,11 +537,8 @@ function draw(){
 function loop(){
   if(!running)return;
   if(mpRole){
-    // Lockstep: оба считают полную физику локально
-    clamp(red);clamp(blue);
-    movePlayer(red);movePlayer(blue);collidePP();movePuck();
-    sendMyPos();    // шлём только свои координаты
-    sendPuckSync(); // хост изредка корректирует шайбу
+    // Сервер-авторитетная физика: только шлём свой ввод, получаем state от сервера
+    sendInput();
   }else{
     // Соло — ИИ
     clamp(blue);updateAI();movePlayer(red);movePlayer(blue);collidePP();movePuck();

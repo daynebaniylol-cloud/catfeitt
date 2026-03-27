@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import { ExpressPeerServer } from 'peer';
+import { createServer } from 'http';
 
 const app = express();
 app.use(cors());
@@ -7,7 +9,7 @@ app.use(express.static('.'));
 
 const queue = [];
 
-app.get('/match', async (req, res) => {
+app.get('/match', (req, res) => {
   const nick = req.query.nick || 'Игрок';
   const myId = Math.random().toString(36).slice(2, 10);
 
@@ -18,7 +20,6 @@ app.get('/match', async (req, res) => {
     return res.json({ roomId: myId, role: 'guest', opponentNick: opponent.nick });
   }
 
-  let resolve;
   const entry = { nick, res, id: myId };
   queue.push(entry);
 
@@ -29,4 +30,8 @@ app.get('/match', async (req, res) => {
   }, 55000);
 });
 
-app.listen(process.env.PORT || 3000, () => console.log('ok'));
+const server = createServer(app);
+const peerServer = ExpressPeerServer(server, { path: '/' });
+app.use('/peer', peerServer);
+
+server.listen(process.env.PORT || 3000, () => console.log('ok'));

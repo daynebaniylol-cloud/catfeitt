@@ -2,7 +2,8 @@
   "type": "module",
   "dependencies": {
     "express": "^4",
-    "cors": "^2"
+    "cors": "^2",
+    "peer": "^2"
   },
   "scripts": { "start": "node server.js" }
 }

@@ -366,7 +366,7 @@ async function joinOnline(){
 
   let data;
   try{
-    const resp=await fetch(`https://catfeitt-production.up.railway.app/match?nick=${encodeURIComponent(playerNick)}`);
+    const resp=await fetch(`/match?nick=${encodeURIComponent(playerNick)}`);
     if(mmAbort)return;
     if(!resp.ok)throw new Error('timeout');
     data=await resp.json();
@@ -390,12 +390,12 @@ async function joinOnline(){
   if(data.role==='host'){
     // Хост создаёт peer с id = roomId, ждёт гостя
     mpRole='host';
-    peer=new Peer('hk-'+roomId);
+    const pCfg={host:location.hostname,port:location.port||443,path:'/peer',secure:location.protocol==='https:'};peer=new Peer('hk-'+roomId,pCfg);
     peer.on('connection',c=>{setupConn(c);setTimeout(()=>{document.getElementById('screen-found').style.display='none';startGame('host');},1500);});
   }else{
     // Гость коннектится к хосту
     mpRole='guest';
-    peer=new Peer();
+    const pCfg2={host:location.hostname,port:location.port||443,path:'/peer',secure:location.protocol==='https:'};peer=new Peer(undefined,pCfg2);
     peer.on('open',()=>{
       const c=peer.connect('hk-'+roomId);
       setupConn(c);

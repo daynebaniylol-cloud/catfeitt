@@ -366,7 +366,7 @@ async function joinOnline(){
 
   let data;
   try{
-    const resp=await fetch(`/api/match?nick=${encodeURIComponent(playerNick)}`);
+    const resp=await fetch(`https://catfeitt-production.up.railway.app/match?nick=${encodeURIComponent(playerNick)}`);
     if(mmAbort)return;
     if(!resp.ok)throw new Error('timeout');
     data=await resp.json();

@@ -323,11 +323,15 @@ function showWinScreen(iWin,delta){
   wi.classList.remove('spring');void wi.offsetWidth;wi.classList.add('spring');
 }
 
-// ── INPUT: шлём позицию своего игрока серверу каждый кадр ──
+// ── INPUT: шлём свою позицию — сервер транслирует сопернику ──
+let _lastSendT=0;
 function sendInput(){
   if(!ws||ws.readyState!==1)return;
+  const now=Date.now();
+  if(now-_lastSendT<16)return; // макс 60 раз/сек
+  _lastSendT=now;
   const me=mpRole==='guest'?blue:red;
-  wsSend({t:'input',x:me.x,y:me.y,vx:me.vx,vy:me.vy,drag:dragPointerId!==null});
+  wsSend({t:'pos',x:me.x,y:me.y,vx:me.vx,vy:me.vy});
 }
 
 function connectWs(roomId,role){
@@ -342,21 +346,20 @@ function connectWs(roomId,role){
       document.getElementById('screen-found').style.display='none';
       startGame(role);
     }
-    if(d.t==='state'&&running){
-      // своего игрока НЕ трогаем (локальное предсказание)
-      // соперника и шайбу берём с сервера
-      if(mpRole==='host'){
-        blue.x=d.bx;blue.y=d.by;blue.vx=d.bvx;blue.vy=d.bvy;
-      }else{
-        red.x=d.rx;red.y=d.ry;red.vx=d.rvx;red.vy=d.rvy;
-      }
-      puck.x=d.px;puck.y=d.py;puck.vx=d.pvx;puck.vy=d.pvy;
+    // получаем только позицию соперника — своего не трогаем
+    if(d.t==='pos'&&running){
+      if(mpRole==='host'){blue.x=d.x;blue.y=d.y;blue.vx=d.vx;blue.vy=d.vy;}
+      else{red.x=d.x;red.y=d.y;red.vx=d.vx;red.vy=d.vy;}
     }
     if(d.t==='hit')playHit();
     if(d.t==='goal'){
       sRed=d.sRed;sBlue=d.sBlue;
       const gx=(d.who==='blue')?RINK.x:RINK.x+RINK.w,gy=GY+GH/2;
       spawnGoalStars(gx,gy,d.who==='red'?'#cc2222':'#2244bb');
+      // сброс позиций после гола
+      red={x:RINK.x+RINK.w*0.22,y:BH/2,vx:0,vy:0,r:PR};
+      blue={x:RINK.x+RINK.w*0.78,y:BH/2,vx:0,vy:0,r:PR};
+      puck={x:BW/2,y:BH/2,vx:0,vy:0,r:PKTR};
     }
     if(d.t==='end'){
       running=false;
@@ -501,6 +504,40 @@ function movePuck(){
   if(puck.x-puck.r<RINK.x){if(puck.y+puck.r>GY&&puck.y-puck.r<GY+GH){goal('blue');return;}puck.x=RINK.x+puck.r;puck.vx=Math.abs(puck.vx)*0.82;}
   if(puck.x+puck.r>RINK.x+RINK.w){if(puck.y+puck.r>GY&&puck.y-puck.r<GY+GH){goal('red');return;}puck.x=RINK.x+RINK.w-puck.r;puck.vx=-Math.abs(puck.vx)*0.82;}
 }
+// Физика шайбы для онлайна — хост авторитетен по голам
+function movePuckMP(){
+  let hit=false;
+  for(const pl of [red,blue]){
+    const dx=puck.x-pl.x,dy=puck.y-pl.y,d=Math.hypot(dx,dy),mn=pl.r+puck.r;
+    if(d<mn&&d>0){
+      const nx=dx/d,ny=dy/d;
+      puck.x=pl.x+nx*mn;puck.y=pl.y+ny*mn;
+      const imp=((pl.vx-puck.vx)*nx+(pl.vy-puck.vy)*ny)*2.6;
+      if(imp>0){puck.vx+=nx*imp;puck.vy+=ny*imp;hit=true;}
+      const ps=Math.hypot(puck.vx,puck.vy);
+      if(ps<3.5){puck.vx=nx*3.5;puck.vy=ny*3.5;}
+      if(ps>18){puck.vx=puck.vx/ps*18;puck.vy=puck.vy/ps*18;}
+    }
+  }
+  puck.x+=puck.vx;puck.y+=puck.vy;puck.vx*=0.991;puck.vy*=0.991;
+  if(puck.y-puck.r<RINK.y){puck.y=RINK.y+puck.r;puck.vy=Math.abs(puck.vy)*0.82;}
+  if(puck.y+puck.r>RINK.y+RINK.h){puck.y=RINK.y+RINK.h-puck.r;puck.vy=-Math.abs(puck.vy)*0.82;}
+  if(puck.x-puck.r<RINK.x){
+    if(puck.y+puck.r>GY&&puck.y-puck.r<GY+GH){
+      if(mpRole==='host')wsSend({t:'goal',who:'blue'});
+      return null;
+    }
+    puck.x=RINK.x+puck.r;puck.vx=Math.abs(puck.vx)*0.82;
+  }
+  if(puck.x+puck.r>RINK.x+RINK.w){
+    if(puck.y+puck.r>GY&&puck.y-puck.r<GY+GH){
+      if(mpRole==='host')wsSend({t:'goal',who:'red'});
+      return null;
+    }
+    puck.x=RINK.x+RINK.w-puck.r;puck.vx=-Math.abs(puck.vx)*0.82;
+  }
+  return hit?'hit':null;
+}
 function spawnGoalStars(x,y,color){for(let i=0;i<14;i++){const a=Math.random()*Math.PI*2,sp=2+Math.random()*5;starAnims.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,r:5+Math.random()*8,color,life:60,maxLife:60});}}
 function goal(who){
   // Только соло-режим — в онлайне голы считает сервер
@@ -541,20 +578,13 @@ function draw(){
 function loop(){
   if(!running)return;
   if(mpRole){
-    // Локальное предсказание своего игрока (без лага)
-    const me=mpRole==='guest'?blue:red;
-    const side=mpRole==='guest'?'blue':'red';
-    clamp(me);
-    if(dragPointerId===null){
-      // физика инерции локально
-      me.x+=me.vx;me.y+=me.vy;me.vx*=0.87;me.vy*=0.87;
-      if(side==='red'){me.x=Math.max(RINK.x+me.r,Math.min(CENTER_X-me.r,me.x));}
-      else{me.x=Math.max(CENTER_X+me.r,Math.min(RINK.x+RINK.w-me.r,me.x));}
-      me.y=Math.max(RINK.y+me.r,Math.min(RINK.y+RINK.h-me.r,me.y));
-    }
-    sendInput();
+    // Каждый клиент считает физику полностью локально
+    clamp(red);clamp(blue);
+    movePlayer(red);movePlayer(blue);collidePP();
+    const ev=movePuckMP(); // своя версия без goal-логики
+    if(ev==='hit')playHit();
+    sendInput(); // шлём свою позицию сопернику
   }else{
-    // Соло — ИИ
     clamp(blue);updateAI();movePlayer(red);movePlayer(blue);collidePP();movePuck();
   }
   ctx.clearRect(0,0,c.width,c.height);draw();requestAnimationFrame(loop);

@@ -7,6 +7,12 @@ const app = express();
 app.use(cors());
 app.use(express.static('.'));
 
+// ← логирование IP
+app.use((req, res, next) => {
+  console.log(`IP: ${req.headers['x-forwarded-for'] || req.ip} | ${req.method} ${req.url}`);
+  next();
+});
+
 // ── ТОП ──
 const leaderboard = [];
 function updateLeaderboard(nick, elo) {
@@ -65,7 +71,6 @@ wss.on('connection', ws => {
   ws.on('message', raw => {
     let d; try { d = JSON.parse(raw); } catch { return; }
 
-    // join комнаты
     if (d.t === 'join') {
       const room = rooms[d.roomId];
       if (!room) return;
@@ -75,12 +80,10 @@ wss.on('connection', ws => {
         room.hostWs = ws; room.hostNick = d.nick; room.hostElo = d.elo || 1640;
       } else {
         room.guestWs = ws; room.guestNick = d.nick; room.guestElo = d.elo || 1640;
-        // оба в комнате — старт
         broadcast(room, { t: 'start' });
       }
     }
 
-    // позиция своего игрока — транслируем сопернику
     if (d.t === 'pos') {
       const room = rooms[ws._roomId];
       if (!room) return;
@@ -88,7 +91,6 @@ wss.on('connection', ws => {
       send(target, { t: 'pos', x: d.x, y: d.y, vx: d.vx, vy: d.vy });
     }
 
-    // гол — только хост считает
     if (d.t === 'goal') {
       const room = rooms[ws._roomId];
       if (!room || ws._role !== 'host') return;
